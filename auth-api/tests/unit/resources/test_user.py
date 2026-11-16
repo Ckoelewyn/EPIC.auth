@@ -38,12 +38,18 @@ def client():
     return app.test_client()
 
 
+@pytest.fixture()
+def token_claims():
+    """Supply an IDIR caller for the user endpoint tests."""
+    return {"loginSource": "idir"}
+
+
 @pytest.fixture(autouse=True)
-def _bypass_auth():
-    """Bypass JWT validation while keeping the real resource handler intact."""
+def _mock_jwt_validation(token_claims):
+    """Supply verified claims while exercising the caller check and resource."""
 
     def _fake_validation(*args, **kwargs):  # pylint: disable=unused-argument
-        g.jwt_oidc_token_info = {"sub": "test-user"}
+        g.jwt_oidc_token_info = token_claims
 
     with patch.object(jwt, "_require_auth_validation", side_effect=_fake_validation):
         yield
@@ -99,3 +105,38 @@ class TestUserGroupNameDelete:
         mock_service.delete_user_group.assert_called_once_with(
             "testuser", "SUBMIT", True, None
         )
+
+
+@pytest.mark.parametrize(
+    ("token_claims", "expected_status"),
+    [
+        ({"azp": "epic-centre", "preferred_username": " staff@IDIR "}, HTTPStatus.NO_CONTENT),
+        ({"azp": "epic-compliance", "loginSource": " IDIR "}, HTTPStatus.NO_CONTENT),
+        (
+            {
+                "azp": "submit-api-condition-client",
+                "client_id": "submit-api-condition-client",
+                "loginSource": "idir",
+            },
+            HTTPStatus.NO_CONTENT,
+        ),
+        (
+            {"loginSource": "bceid", "preferred_username": "staff@idir"},
+            HTTPStatus.FORBIDDEN,
+        ),
+        ({"client_id": "submit-api-condition-client"}, HTTPStatus.FORBIDDEN),
+        ({}, HTTPStatus.FORBIDDEN),
+    ],
+)
+@patch("auth_api.resources.user.UserService")
+def test_user_group_delete_requires_idir(mock_service, client, expected_status):
+    """Accept IDIR callers and reject other tokens before updating membership."""
+    response = client.delete(
+        "/users/testuser/groups/SUBMIT", headers={"Authorization": "Bearer token"}
+    )
+
+    assert response.status_code == expected_status
+    if expected_status == HTTPStatus.FORBIDDEN:
+        mock_service.delete_user_group.assert_not_called()
+    else:
+        mock_service.delete_user_group.assert_called_once()

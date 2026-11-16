@@ -13,6 +13,7 @@
 # limitations under the License.
 """Bring in the common JWT Manager."""
 from functools import wraps
+from http import HTTPStatus
 
 from flask import g, request
 from flask_jwt_oidc import JwtManager
@@ -23,18 +24,31 @@ jwt = (
 )  # pylint: disable=invalid-name; lower case name as used by convention in most Flask apps
 
 
-class Auth:  # pylint: disable=too-few-public-methods
+class Auth:
     """Extending JwtManager to include additional functionalities."""
+
+    @staticmethod
+    def is_idir(token_info):
+        """Check login source, falling back to the IDIR username suffix."""
+        claims = token_info or {}
+        login_source = claims.get("loginSource")
+        if isinstance(login_source, str) and login_source.strip():
+            return login_source.strip().casefold() == "idir"
+
+        username = claims.get("preferred_username")
+        return isinstance(username, str) and username.strip().casefold().endswith("@idir")
 
     @classmethod
     def require(cls, f):
-        """Validate the Bearer Token."""
+        """Validate the bearer token and require IDIR authentication."""
 
         @jwt.requires_auth
         @wraps(f)
         def decorated(*args, **kwargs):
             g.authorization_header = request.headers.get("Authorization", None)
             g.token_info = g.jwt_oidc_token_info
+            if not cls.is_idir(g.token_info):
+                return {"message": "IDIR authentication required"}, HTTPStatus.FORBIDDEN
 
             return f(*args, **kwargs)
 
